@@ -53,6 +53,10 @@
 #include "xdg-activation-v1-client-protocol.h"
 #include "idle-inhibit-unstable-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
+#include "text-input-unstable-v1-client-protocol.h"
+#include "text-input-unstable-v3-client-protocol.h"
+#include "pointer-warp-v1-client-protocol.h"
+#include "xx-fractional-scale-v2-client-protocol.h"
 
 #define GLFW_BORDER_SIZE    4
 #define GLFW_CAPTION_HEIGHT 24
@@ -460,6 +464,41 @@ static const struct zxdg_toplevel_decoration_v1_listener xdgDecorationListener =
     xdgDecorationHandleConfigure,
 };
 
+// With xx_fractional_scale_v2 the compositor and the client agree on the
+// coordinate space the surface acts in.  GLFW declares that space to be
+// pixels, while its public API keeps using screen coordinates, so the two
+// have to be converted at the protocol boundary.  Converting here (instead of
+// rounding the logical size up to whole logical pixels) keeps the surface
+// exactly aligned to the output's pixel grid at fractional scale factors.
+static int logicalToSurface(_GLFWwindow* window, int value)
+{
+    if (!window || !window->wl.fractionalScaleV2)
+        return value;
+    return (value * (int) window->wl.scalingNumerator + 60) / 120;
+}
+
+static int surfaceToLogical(_GLFWwindow* window, int value)
+{
+    if (!window || !window->wl.fractionalScaleV2)
+        return value;
+    return (value * 120 + (int) window->wl.scalingNumerator / 2) /
+           (int) window->wl.scalingNumerator;
+}
+
+static double surfaceToLogicalD(_GLFWwindow* window, double value)
+{
+    if (!window || !window->wl.fractionalScaleV2)
+        return value;
+    return value * 120.0 / (double) window->wl.scalingNumerator;
+}
+
+static double logicalToSurfaceD(_GLFWwindow* window, double value)
+{
+    if (!window || !window->wl.fractionalScaleV2)
+        return value;
+    return value * (double) window->wl.scalingNumerator / 120.0;
+}
+
 // Makes the surface considered as XRGB instead of ARGB.
 static void setContentAreaOpaque(_GLFWwindow* window)
 {
@@ -469,14 +508,17 @@ static void setContentAreaOpaque(_GLFWwindow* window)
     if (!region)
         return;
 
-    wl_region_add(region, 0, 0, window->wl.width, window->wl.height);
+    if (window->wl.fractionalScaleV2)
+        wl_region_add(region, 0, 0, window->wl.fbWidth, window->wl.fbHeight);
+    else
+        wl_region_add(region, 0, 0, window->wl.width, window->wl.height);
     wl_surface_set_opaque_region(window->wl.surface, region);
     wl_region_destroy(region);
 }
 
 static void resizeFramebuffer(_GLFWwindow* window)
 {
-    if (window->wl.fractionalScale)
+    if (window->wl.fractionalScale || window->wl.fractionalScaleV2)
     {
         // Round halfway away from zero per fractional-scale-v1 protocol spec
         window->wl.fbWidth = (window->wl.width * window->wl.scalingNumerator + 60) / 120;
@@ -517,9 +559,20 @@ static GLFWbool resizeWindow(_GLFWwindow* window, int width, int height)
 
     if (window->wl.scalingViewport)
     {
-        wp_viewport_set_destination(window->wl.scalingViewport,
-                                    window->wl.width,
-                                    window->wl.height);
+        // In fractional-scale-v2 mode the viewport destination is expressed
+        // in the client's coordinate space, which is pixels
+        if (window->wl.fractionalScaleV2)
+        {
+            wp_viewport_set_destination(window->wl.scalingViewport,
+                                        window->wl.fbWidth,
+                                        window->wl.fbHeight);
+        }
+        else
+        {
+            wp_viewport_set_destination(window->wl.scalingViewport,
+                                        window->wl.width,
+                                        window->wl.height);
+        }
     }
 
     if (window->wl.fallback.decorations)
@@ -564,7 +617,7 @@ void _glfwUpdateBufferScaleFromOutputsWayland(_GLFWwindow* window)
         return;
 
     // When using fractional scaling, the buffer scale should remain at 1
-    if (window->wl.fractionalScale)
+    if (window->wl.fractionalScale || window->wl.fractionalScaleV2)
         return;
 
     // Get the scale factor from the highest scale monitor.
@@ -719,6 +772,76 @@ const struct wp_fractional_scale_v1_listener fractionalScaleListener =
     fractionalScaleHandlePreferredScale,
 };
 
+static void fractionalScaleV2HandleScaleFactor(void* userData,
+                                               struct xx_fractional_scale_v2* fractionalScale,
+                                               uint32_t scale)
+{
+    _GLFWwindow* window = userData;
+
+    if (!scale)
+        return;
+
+    // Declare that GLFW uses the same coordinate space as the compositor asks
+    // for, i.e. that surface coordinates are pixels.  The compositor then
+    // derives the logical size by exact division (for example 2560 / 1.5 =
+    // 1706.666...) instead of rounding it up, which keeps the frame 1:1 even
+    // at fractional scale factors.
+    xx_fractional_scale_v2_set_scale_factor(fractionalScale, scale);
+
+    window->wl.scalingNumerator =
+        (uint32_t) (((uint64_t) scale * 120 + (1u << 23)) >> 24);
+
+    resizeFramebuffer(window);
+
+    if (window->wl.scalingViewport)
+    {
+        wp_viewport_set_destination(window->wl.scalingViewport,
+                                    window->wl.fbWidth,
+                                    window->wl.fbHeight);
+    }
+
+    _glfwInputWindowContentScale(window,
+                                 window->wl.scalingNumerator / 120.f,
+                                 window->wl.scalingNumerator / 120.f);
+
+    if (getenv("GLFW_WAYLAND_DEBUG_FRACTIONAL_SCALE_V2"))
+    {
+        fprintf(stderr, "GLFW: xx_fractional_scale_v2 active, scale %.3f, "
+                        "framebuffer %dx%d\n",
+                window->wl.scalingNumerator / 120.0,
+                window->wl.fbWidth, window->wl.fbHeight);
+    }
+
+    if (window->wl.visible)
+        _glfwInputWindowDamage(window);
+}
+
+static const struct xx_fractional_scale_v2_listener fractionalScaleV2Listener =
+{
+    fractionalScaleV2HandleScaleFactor,
+};
+
+static void activateTextInputV1(_GLFWwindow* window)
+{
+    if (!window->wl.textInputV1)
+        return;
+    zwp_text_input_v1_show_input_panel(window->wl.textInputV1);
+    zwp_text_input_v1_activate(window->wl.textInputV1, _glfw.wl.seat, window->wl.surface);
+}
+
+static void deactivateTextInputV1(_GLFWwindow* window)
+{
+    if (!window->wl.textInputV1)
+        return;
+    zwp_text_input_v1_hide_input_panel(window->wl.textInputV1);
+    zwp_text_input_v1_deactivate(window->wl.textInputV1, _glfw.wl.seat);
+}
+
+static GLFWbool textInputFocusDisabled(_GLFWwindow* window)
+{
+    return window->textInputFocusInitialized && !window->textInputFocus;
+}
+
 static void xdgToplevelHandleConfigure(void* userData,
                                        struct xdg_toplevel* toplevel,
                                        int32_t width,
@@ -746,8 +869,24 @@ static void xdgToplevelHandleConfigure(void* userData,
                 break;
             case XDG_TOPLEVEL_STATE_ACTIVATED:
                 window->wl.pending.activated = GLFW_TRUE;
+                if (!textInputFocusDisabled(window))
+                    activateTextInputV1(window);
                 break;
         }
+    }
+
+    if (getenv("GLFW_WAYLAND_DEBUG_FRACTIONAL_SCALE_V2"))
+        fprintf(stderr, "GLFW: configure %dx%d (v2=%d numerator=%u monitor=%p)\n",
+                width, height, window->wl.fractionalScaleV2 ? 1 : 0,
+                window->wl.scalingNumerator, (void*) window->monitor);
+
+    // With xx_fractional_scale_v2 the configure size is expressed in the
+    // client's coordinate space, which is pixels; GLFW keeps screen
+    // coordinates internally.
+    if (width && height && window->wl.fractionalScaleV2)
+    {
+        width  = surfaceToLogical(window, width);
+        height = surfaceToLogical(window, height);
     }
 
     if (width && height)
@@ -1078,8 +1217,12 @@ static void updateXdgSizeLimits(_GLFWwindow* window)
         minheight = maxheight = window->wl.height;
     }
 
-    xdg_toplevel_set_min_size(window->wl.xdg.toplevel, minwidth, minheight);
-    xdg_toplevel_set_max_size(window->wl.xdg.toplevel, maxwidth, maxheight);
+    xdg_toplevel_set_min_size(window->wl.xdg.toplevel,
+                              logicalToSurface(window, minwidth),
+                              logicalToSurface(window, minheight));
+    xdg_toplevel_set_max_size(window->wl.xdg.toplevel,
+                              logicalToSurface(window, maxwidth),
+                              logicalToSurface(window, maxheight));
 }
 
 static GLFWbool createXdgShellObjects(_GLFWwindow* window)
@@ -1156,7 +1299,10 @@ static GLFWbool createXdgShellObjects(_GLFWwindow* window)
 
 static GLFWbool createShellObjects(_GLFWwindow* window)
 {
-    if (_glfw.wl.libdecor.context)
+    // libdecor draws client-side decorations, whose coordinates would have to
+    // be converted to the fractional-scale-v2 coordinate space as well.  Use
+    // the xdg-decoration protocol (and thus server-side decorations) instead.
+    if (_glfw.wl.libdecor.context && !window->wl.fractionalScaleV2)
     {
         if (createLibdecorFrame(window))
             return GLFW_TRUE;
@@ -1220,17 +1366,39 @@ static GLFWbool createNativeSurface(_GLFWwindow* window,
     if (!window->wl.transparent)
         setContentAreaOpaque(window);
 
-    if (_glfw.wl.fractionalScaleManager)
+    if (window->wl.scaleFramebuffer && _glfw.wl.viewporter &&
+        (_glfw.wl.fractionalScaleManager || _glfw.wl.fractionalScaleV2Manager))
     {
-        if (window->wl.scaleFramebuffer)
+        // Prefer KWin's xx_fractional_scale_v2 when the compositor offers it:
+        // it lets the client declare its own coordinate space, which removes
+        // the half-pixel resampling that fractional scales otherwise cause.
+        // It is only used with server-side decorations, since the client-side
+        // decoration coordinates are not converted here.
+        const GLFWbool useFractionalScaleV2 =
+            _glfw.wl.fractionalScaleV2Manager &&
+            (!window->decorated || _glfw.wl.decorationManager) &&
+            !getenv("GLFW_WAYLAND_NO_FRACTIONAL_SCALE_V2");
+
+        window->wl.scalingViewport =
+            wp_viewporter_get_viewport(_glfw.wl.viewporter, window->wl.surface);
+
+        wp_viewport_set_destination(window->wl.scalingViewport,
+                                    window->wl.width,
+                                    window->wl.height);
+
+        if (useFractionalScaleV2)
         {
-            window->wl.scalingViewport =
-                wp_viewporter_get_viewport(_glfw.wl.viewporter, window->wl.surface);
+            window->wl.fractionalScaleV2 =
+                xx_fractional_scale_manager_v2_get_fractional_scale(
+                    _glfw.wl.fractionalScaleV2Manager,
+                    window->wl.surface);
 
-            wp_viewport_set_destination(window->wl.scalingViewport,
-                                        window->wl.width,
-                                        window->wl.height);
-
+            xx_fractional_scale_v2_add_listener(window->wl.fractionalScaleV2,
+                                                &fractionalScaleV2Listener,
+                                                window);
+        }
+        else if (_glfw.wl.fractionalScaleManager)
+        {
             window->wl.fractionalScale =
                 wp_fractional_scale_manager_v1_get_fractional_scale(
                     _glfw.wl.fractionalScaleManager,
@@ -1622,8 +1790,9 @@ static void pointerHandleEnter(void* userData,
     _glfw.wl.serial = serial;
     _glfw.wl.pointerEnterSerial = serial;
 
-    const double xpos = wl_fixed_to_double(sx);
-    const double ypos = wl_fixed_to_double(sy);
+    _GLFWwindow* window = wl_surface_get_user_data(surface);
+    const double xpos = surfaceToLogicalD(window, wl_fixed_to_double(sx));
+    const double ypos = surfaceToLogicalD(window, wl_fixed_to_double(sy));
 
     if (wl_pointer_get_version(pointer) >= WL_POINTER_FRAME_SINCE_VERSION)
     {
@@ -1670,8 +1839,9 @@ static void pointerHandleMotion(void* userData,
     if (!_glfw.wl.pointerSurface)
         return;
 
-    const double xpos = wl_fixed_to_double(sx);
-    const double ypos = wl_fixed_to_double(sy);
+    _GLFWwindow* window = wl_surface_get_user_data(_glfw.wl.pointerSurface);
+    const double xpos = surfaceToLogicalD(window, wl_fixed_to_double(sx));
+    const double ypos = surfaceToLogicalD(window, wl_fixed_to_double(sy));
 
     if (wl_pointer_get_version(pointer) >= WL_POINTER_FRAME_SINCE_VERSION)
     {
@@ -1693,12 +1863,19 @@ static void pointerHandleButton(void* userData,
     if (!_glfw.wl.pointerSurface)
         return;
 
+    _GLFWwindow* window = wl_surface_get_user_data(_glfw.wl.pointerSurface);
+
+    // On weston, pressing the title bar will cause leave event and never emit
+    // enter event even though back to content area by pressing mouse button
+    // just after it. So activate it here explicitly.
+    if (!textInputFocusDisabled(window))
+        activateTextInputV1(window);
+
     _glfw.wl.serial = serial;
 
     const int button = buttonID - BTN_LEFT;
     const int action = (state == WL_POINTER_BUTTON_STATE_PRESSED);
 
-    _GLFWwindow* window = wl_surface_get_user_data(_glfw.wl.pointerSurface);
     if (window->wl.fallback.decorations)
     {
         if (action == GLFW_PRESS)
@@ -2376,6 +2553,429 @@ GLFWbool _glfwWaitForEGLFrameWayland(_GLFWwindow* window)
     return window->wl.visible;
 }
 
+// Callbacks for text_input_unstable_v3 protocol.
+//
+// This protocol is widely supported by major desktop environments such as GNOME
+// or KDE.
+//
+static void textInputV3Enter(void* data,
+                             struct zwp_text_input_v3* textInputV3,
+                             struct wl_surface* surface)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+
+    if (!textInputFocusDisabled(window))
+    {
+        zwp_text_input_v3_enable(textInputV3);
+        zwp_text_input_v3_commit(textInputV3);
+    }
+}
+
+static void textInputV3Reset(_GLFWwindow* window)
+{
+    _GLFWpreedit* preedit = &window->preedit;
+
+    preedit->textCount = 0;
+    preedit->blockSizesCount = 0;
+    preedit->focusedBlockIndex = 0;
+    preedit->caretIndex = 0;
+
+    _glfwInputPreedit(window);
+}
+
+static void textInputV3Leave(void* data,
+                             struct zwp_text_input_v3* textInputV3,
+                             struct wl_surface* surface)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    zwp_text_input_v3_disable(textInputV3);
+    zwp_text_input_v3_commit(textInputV3);
+
+    // Although this should be handled by IM via preedit callback, it seems that
+    // the behavior varies depending on implemention. It's cleared by IM on
+    // Ubuntu 22.04 but not cleared on Ubuntu 20.04.
+    textInputV3Reset(window);
+}
+
+static int utf8OffsetToCodepointIndex(const char* text, int32_t offset)
+{
+    const char* cur = text;
+    const char* end;
+    int index = 0;
+
+    if (!text || offset <= 0)
+        return 0;
+
+    end = text + offset;
+    while (*cur && cur < end)
+    {
+        _glfwDecodeUTF8(&cur);
+        index++;
+    }
+
+    return index;
+}
+
+static void textInputV3PreeditString(void* data,
+                                     struct zwp_text_input_v3* textInputV3,
+                                     const char* text,
+                                     int32_t cursorBegin,
+                                     int32_t cursorEnd)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    _GLFWpreedit* preedit = &window->preedit;
+    const char* cur = text;
+    int cursorPos = 0;
+
+    if (textInputFocusDisabled(window))
+        return;
+
+    preedit->textCount = 0;
+    preedit->blockSizesCount = 0;
+    preedit->focusedBlockIndex = 0;
+    preedit->caretIndex = 0;
+
+    cursorPos = utf8OffsetToCodepointIndex(text, cursorBegin);
+
+    // Store preedit text
+    while (cur && *cur)
+    {
+        uint32_t codepoint = _glfwDecodeUTF8(&cur);
+
+        ++preedit->textCount;
+
+        if (preedit->textBufferCount < preedit->textCount + 1)
+        {
+            int bufSize = preedit->textBufferCount;
+
+            while (bufSize < preedit->textCount + 1)
+                bufSize = (bufSize == 0) ? 1 : bufSize * 2;
+            preedit->text = _glfw_realloc(preedit->text,
+                                          sizeof(unsigned int) * bufSize);
+            if (!preedit->text)
+                return;
+            preedit->textBufferCount = bufSize;
+        }
+        preedit->text[preedit->textCount - 1] = codepoint;
+    }
+    if (preedit->text)
+        preedit->text[preedit->textCount] = 0;
+
+    if (cursorPos > preedit->textCount)
+        cursorPos = preedit->textCount;
+    preedit->caretIndex = cursorPos;
+
+    // Store preedit blocks
+    if (preedit->textCount)
+    {
+        int* blocks = preedit->blockSizes;
+        int textCount = preedit->textCount;
+
+        if (!preedit->blockSizes)
+        {
+            int bufSize = 3;
+
+            preedit->blockSizesBufferCount = bufSize;
+            preedit->blockSizes = _glfw_calloc(sizeof(int), bufSize);
+            if (!preedit->blockSizes)
+                return;
+            blocks = preedit->blockSizes;
+        }
+
+        blocks[0] = textCount;
+        preedit->focusedBlockIndex = 0;
+        preedit->blockSizesCount = 1;
+    }
+}
+
+static void textInputV3CommitString(void* data,
+                                    struct zwp_text_input_v3* textInputV3,
+                                    const char* text)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    const char* cur = text;
+
+    if (textInputFocusDisabled(window))
+        return;
+
+    textInputV3Reset(window);
+
+    if (!window->callbacks.character)
+        return;
+
+    while (cur && *cur)
+    {
+        uint32_t codepoint = _glfwDecodeUTF8(&cur);
+        window->callbacks.character((GLFWwindow*) window, codepoint);
+    }
+}
+
+static void textInputV3DeleteSurroundingText(void* data,
+                                             struct zwp_text_input_v3* textInputV3,
+                                             uint32_t beforeLength,
+                                             uint32_t afterLength)
+{
+}
+
+static void textInputV3Done(void* data,
+                            struct zwp_text_input_v3* textInputV3,
+                            uint32_t serial)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    if (textInputFocusDisabled(window))
+        return;
+
+    _glfwUpdatePreeditCursorRectangleWayland(window);
+    _glfwInputPreedit(window);
+}
+
+static const struct zwp_text_input_v3_listener textInputV3Listener =
+{
+    textInputV3Enter,
+    textInputV3Leave,
+    textInputV3PreeditString,
+    textInputV3CommitString,
+    textInputV3DeleteSurroundingText,
+    textInputV3Done
+};
+
+// Callbacks for text_input_unstable_v1 protocol
+//
+// This protocol isn't so popular but Weston which is the reference Wayland
+// implementation supports only this protocol and doesn't support
+// text_input_unstable_v3.
+//
+static void textInputV1Enter(void* data,
+                             struct zwp_text_input_v1* textInputV1,
+                             struct wl_surface* surface)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+
+    if (!textInputFocusDisabled(window))
+        activateTextInputV1(window);
+}
+
+static void textInputV1Reset(_GLFWwindow* window)
+{
+    _GLFWpreedit* preedit = &window->preedit;
+
+    preedit->textCount = 0;
+    preedit->blockSizesCount = 0;
+    preedit->focusedBlockIndex = 0;
+    preedit->caretIndex = 0;
+
+    _glfw_free(window->wl.textInputV1Context.preeditText);
+    _glfw_free(window->wl.textInputV1Context.commitTextOnReset);
+    window->wl.textInputV1Context.preeditText = NULL;
+    window->wl.textInputV1Context.commitTextOnReset = NULL;
+
+    _glfwInputPreedit(window);
+}
+
+static void textInputV1Leave(void* data,
+                             struct zwp_text_input_v1* textInputV1)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    char* commitText = window->wl.textInputV1Context.commitTextOnReset;
+
+    if (textInputFocusDisabled(window))
+    {
+        textInputV1Reset(window);
+        deactivateTextInputV1(window);
+        return;
+    }
+
+    textInputV3CommitString(data, NULL, commitText);
+    textInputV1Reset(window);
+    deactivateTextInputV1(window);
+}
+
+static void textInputV1ModifiersMap(void* data,
+                                    struct zwp_text_input_v1* textInputV1,
+                                    struct wl_array* map)
+{
+}
+
+static void textInputV1InputPanelState(void* data,
+                                       struct zwp_text_input_v1* textInputV1,
+                                       uint32_t state)
+{
+}
+
+static void textInputV1PreeditString(void* data,
+                                     struct zwp_text_input_v1* textInputV1,
+                                     uint32_t serial,
+                                     const char* text,
+                                     const char* commit)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+
+    if (textInputFocusDisabled(window))
+        return;
+
+    _glfw_free(window->wl.textInputV1Context.preeditText);
+    _glfw_free(window->wl.textInputV1Context.commitTextOnReset);
+    window->wl.textInputV1Context.preeditText = strdup(text);
+    window->wl.textInputV1Context.commitTextOnReset = strdup(commit);
+
+    textInputV3PreeditString(data, NULL, text, 0, 0);
+    _glfwInputPreedit(window);
+}
+
+static void textInputV1PreeditStyling(void* data,
+                                      struct zwp_text_input_v1* textInputV1,
+                                      uint32_t index,
+                                      uint32_t length,
+                                      uint32_t style)
+{
+}
+
+static void textInputV1PreeditCursor(void* data,
+                                     struct zwp_text_input_v1* textInputV1,
+                                     int32_t index)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    _GLFWpreedit* preedit = &window->preedit;
+    const char* text = window->wl.textInputV1Context.preeditText;
+    const char* cur = text;
+
+    if (textInputFocusDisabled(window))
+        return;
+
+    preedit->caretIndex = 0;
+    if (index <= 0 || preedit->textCount == 0)
+        return;
+
+    while (cur && *cur)
+    {
+        _glfwDecodeUTF8(&cur);
+        ++preedit->caretIndex;
+        if (cur >= text + index)
+            break;
+        if (preedit->caretIndex > preedit->textCount)
+            break;
+    }
+}
+
+static void textInputV1CommitString(void* data,
+                                    struct zwp_text_input_v1* textInputV1,
+                                    uint32_t serial,
+                                    const char* text)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+
+    if (textInputFocusDisabled(window))
+        return;
+
+    textInputV1Reset(window);
+    textInputV3CommitString(data, NULL, text);
+}
+
+static void textInputV1CursorPosition(void* data,
+                                      struct zwp_text_input_v1* textInputV1,
+                                      int32_t index,
+                                      int32_t anchor)
+{
+    // It's for surrounding text feature which isn't supported by GLFW.
+}
+
+static void textInputV1DeleteSurroundingText(void* data,
+                                             struct zwp_text_input_v1* textInputV1,
+                                             int32_t index,
+                                             uint32_t length)
+{
+}
+
+static void textInputV1Keysym(void* data,
+                              struct zwp_text_input_v1* textInputV1,
+                              uint32_t serial,
+                              uint32_t time,
+                              uint32_t sym,
+                              uint32_t state,
+                              uint32_t modifiers)
+{
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    if (textInputFocusDisabled(window))
+        return;
+
+    uint32_t scancode;
+
+    // This code supports only weston-keyboard because we aren't aware
+    // of any other input methods that actually support this API.
+    // Supporting all keysyms is overkill for now.
+
+    switch (sym)
+    {
+        case XKB_KEY_Left:
+            scancode = KEY_LEFT;
+            break;
+        case XKB_KEY_Right:
+            scancode = KEY_RIGHT;
+            break;
+        case XKB_KEY_Up:
+            scancode = KEY_UP;
+            break;
+        case XKB_KEY_Down:
+            scancode = KEY_DOWN;
+            break;
+        case XKB_KEY_BackSpace:
+            scancode = KEY_BACKSPACE;
+            break;
+        case XKB_KEY_Tab:
+            scancode = KEY_TAB;
+            break;
+        case XKB_KEY_KP_Enter:
+            scancode = KEY_KPENTER;
+            break;
+        case XKB_KEY_Return:
+            scancode = KEY_ENTER;
+            break;
+        default:
+            return;
+    }
+
+    _glfw.wl.xkb.modifiers = modifiers;
+
+    keyboardHandleKey(data,
+                      _glfw.wl.keyboard,
+                      serial,
+                      time,
+                      scancode,
+                      state);
+}
+
+static void textInputV1Language(void* data,
+                                struct zwp_text_input_v1* textInputV1,
+                                uint32_t serial,
+                                const char* language)
+{
+}
+
+static void textInputV1TextDirection(void* data,
+                                     struct zwp_text_input_v1* textInputV1,
+                                     uint32_t serial,
+                                     uint32_t direction)
+{
+}
+
+static const struct zwp_text_input_v1_listener textInputV1Listener =
+{
+    textInputV1Enter,
+    textInputV1Leave,
+    textInputV1ModifiersMap,
+    textInputV1InputPanelState,
+    textInputV1PreeditString,
+    textInputV1PreeditStyling,
+    textInputV1PreeditCursor,
+    textInputV1CommitString,
+    textInputV1CursorPosition,
+    textInputV1DeleteSurroundingText,
+    textInputV1Keysym,
+    textInputV1Language,
+    textInputV1TextDirection
+};
+
+
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
@@ -2450,6 +3050,21 @@ GLFWbool _glfwCreateWindowWayland(_GLFWwindow* window,
             return GLFW_FALSE;
     }
 
+    if (_glfw.wl.textInputManagerV3)
+    {
+        window->wl.textInputV3 =
+            zwp_text_input_manager_v3_get_text_input(_glfw.wl.textInputManagerV3, _glfw.wl.seat);
+        zwp_text_input_v3_add_listener(window->wl.textInputV3,
+                                       &textInputV3Listener, window);
+    }
+    else if (_glfw.wl.textInputManagerV1)
+    {
+        window->wl.textInputV1 =
+            zwp_text_input_manager_v1_create_text_input(_glfw.wl.textInputManagerV1);
+        zwp_text_input_v1_add_listener(window->wl.textInputV1,
+                                       &textInputV1Listener, window);
+    }
+
     return GLFW_TRUE;
 }
 
@@ -2469,11 +3084,23 @@ void _glfwDestroyWindowWayland(_GLFWwindow* window)
     if (window->wl.fractionalScale)
         wp_fractional_scale_v1_destroy(window->wl.fractionalScale);
 
+    if (window->wl.fractionalScaleV2)
+        xx_fractional_scale_v2_destroy(window->wl.fractionalScaleV2);
+
     if (window->wl.scalingViewport)
         wp_viewport_destroy(window->wl.scalingViewport);
 
     if (window->wl.activationToken)
         xdg_activation_token_v1_destroy(window->wl.activationToken);
+
+    if (window->wl.textInputV1) {
+        zwp_text_input_v1_destroy(window->wl.textInputV1);
+        _glfw_free(window->wl.textInputV1Context.preeditText);
+        _glfw_free(window->wl.textInputV1Context.commitTextOnReset);
+    }
+
+    if (window->wl.textInputV3)
+        zwp_text_input_v3_destroy(window->wl.textInputV3);
 
     if (window->wl.idleInhibitor)
         zwp_idle_inhibitor_v1_destroy(window->wl.idleInhibitor);
@@ -2525,25 +3152,37 @@ void _glfwSetWindowTitleWayland(_GLFWwindow* window, const char* title)
 void _glfwSetWindowIconWayland(_GLFWwindow* window,
                                int count, const GLFWimage* images)
 {
-    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
-                    "Wayland: The platform does not support setting the window icon");
+    // Wayland does not let a client set the toplevel icon; the icon is taken
+    // from the .desktop file that matches the application id.  This is not
+    // reported as GLFW_FEATURE_UNAVAILABLE because applications such as
+    // Minecraft do not handle that error and abort.
+    (void) window;
+    (void) count;
+    (void) images;
 }
 
 void _glfwGetWindowPosWayland(_GLFWwindow* window, int* xpos, int* ypos)
 {
-    // A Wayland client is not aware of its position, so just warn and leave it
-    // as (0, 0)
+    // A Wayland client is not aware of its position, so report (0, 0) instead
+    // of raising GLFW_FEATURE_UNAVAILABLE; applications such as Minecraft do
+    // not handle that error and abort.
+    (void) window;
 
-    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
-                    "Wayland: The platform does not provide the window position");
+    if (xpos)
+        *xpos = 0;
+    if (ypos)
+        *ypos = 0;
 }
 
 void _glfwSetWindowPosWayland(_GLFWwindow* window, int xpos, int ypos)
 {
-    // A Wayland client can not set its position, so just warn
-
-    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
-                    "Wayland: The platform does not support setting the window position");
+    // A Wayland client can not set its position; the compositor decides where
+    // the window is placed.  Silently ignore the request instead of raising
+    // GLFW_FEATURE_UNAVAILABLE; applications such as Minecraft do not handle
+    // that error and abort.
+    (void) window;
+    (void) xpos;
+    (void) ypos;
 }
 
 void _glfwGetWindowSizeWayland(_GLFWwindow* window, int* width, int* height)
@@ -2661,7 +3300,7 @@ void _glfwGetWindowFrameSizeWayland(_GLFWwindow* window,
 void _glfwGetWindowContentScaleWayland(_GLFWwindow* window,
                                        float* xscale, float* yscale)
 {
-    if (window->wl.fractionalScale)
+    if (window->wl.fractionalScale || window->wl.fractionalScaleV2)
     {
         if (xscale)
             *xscale = (float) window->wl.scalingNumerator / 120.f;
@@ -2969,8 +3608,31 @@ void _glfwGetCursorPosWayland(_GLFWwindow* window, double* xpos, double* ypos)
 
 void _glfwSetCursorPosWayland(_GLFWwindow* window, double x, double y)
 {
-    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
-                    "Wayland: The platform does not support setting the cursor position");
+    if (!_glfw.wl.pointerWarpV1 || !_glfw.wl.pointer)
+    {
+        _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
+                        "Wayland: Setting the cursor position requires the "
+                        "wp_pointer_warp_v1 protocol");
+        return;
+    }
+
+    if (!_glfw.wl.pointerEnterSerial)
+    {
+        // The compositor rejects warps that don't carry a valid pointer enter
+        // serial, which we don't have until the pointer enters the surface.
+        _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
+                        "Wayland: Cannot set the cursor position before the "
+                        "pointer has entered the window");
+        return;
+    }
+
+    wp_pointer_warp_v1_warp_pointer(_glfw.wl.pointerWarpV1,
+                                    window->wl.surface,
+                                    _glfw.wl.pointer,
+                                    wl_fixed_from_double(logicalToSurfaceD(window, x)),
+                                    wl_fixed_from_double(logicalToSurfaceD(window, y)),
+                                    _glfw.wl.pointerEnterSerial);
+    wl_display_flush(_glfw.wl.display);
 }
 
 void _glfwSetCursorModeWayland(_GLFWwindow* window, int mode)
@@ -3497,6 +4159,63 @@ const char* _glfwGetClipboardStringWayland(void)
     _glfw.wl.clipboardString =
         readDataOfferAsString(_glfw.wl.selectionOffer, "text/plain;charset=utf-8");
     return _glfw.wl.clipboardString;
+}
+
+void _glfwUpdatePreeditCursorRectangleWayland(_GLFWwindow* window)
+{
+    _GLFWpreedit* preedit = &window->preedit;
+    int x = preedit->cursorPosX;
+    int y = preedit->cursorPosY;
+    int w = preedit->cursorWidth;
+    int h = preedit->cursorHeight;
+
+    if (window->wl.textInputV3)
+    {
+        zwp_text_input_v3_set_cursor_rectangle(window->wl.textInputV3, x, y, w, h);
+        zwp_text_input_v3_commit(window->wl.textInputV3);
+    }
+    else if (window->wl.textInputV1)
+        zwp_text_input_v1_set_cursor_rectangle(window->wl.textInputV1, x, y, w, h);
+}
+
+void _glfwResetPreeditTextWayland(_GLFWwindow* window)
+{
+}
+
+void _glfwSetTextInputFocusWayland(_GLFWwindow* window, GLFWbool focused)
+{
+    if (window->wl.textInputV3)
+    {
+        if (focused)
+            zwp_text_input_v3_enable(window->wl.textInputV3);
+        else
+        {
+            zwp_text_input_v3_disable(window->wl.textInputV3);
+            textInputV3Reset(window);
+        }
+
+        zwp_text_input_v3_commit(window->wl.textInputV3);
+    }
+    else if (window->wl.textInputV1)
+    {
+        if (focused)
+            activateTextInputV1(window);
+        else
+        {
+            zwp_text_input_v1_reset(window->wl.textInputV1);
+            textInputV1Reset(window);
+            deactivateTextInputV1(window);
+        }
+    }
+}
+
+void _glfwSetIMEStatusWayland(_GLFWwindow* window, int active)
+{
+}
+
+int _glfwGetIMEStatusWayland(_GLFWwindow* window)
+{
+    return GLFW_FALSE;
 }
 
 EGLenum _glfwGetEGLPlatformWayland(EGLint** attribs)

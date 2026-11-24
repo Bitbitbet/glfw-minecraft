@@ -1,0 +1,57 @@
+{
+    "version": 5,
+    "configurePresets": [
+        {
+            "name": "release",
+            "displayName": "Ninja Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_SHARED_LIBS": true,
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+                "GLFW_BUILD_WAYLAND": true,
+                "GLFW_BUILD_X11": false,
+                "GLFW_BUILD_DOCS": false,
+                "GLFW_BUILD_EXAMPLES": true,
+                "GLFW_BUILD_TESTS": true
+            }
+        },
+        {
+            "name": "cross-win64-release",
+            "displayName": "Cross-compile Win64 Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-win64",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_SHARED_LIBS": true,
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+                "CMAKE_SYSTEM_NAME": "Windows",
+                "CMAKE_SYSTEM_PROCESSOR": "x86_64",
+                "CMAKE_C_COMPILER": "x86_64-w64-mingw32-gcc",
+                "CMAKE_CXX_COMPILER": "x86_64-w64-mingw32-g++",
+                "CMAKE_RC_COMPILER": "x86_64-w64-mingw32-windres",
+                "GLFW_BUILD_WAYLAND": false,
+                "GLFW_BUILD_X11": false,
+                "GLFW_BUILD_DOCS": false,
+                "GLFW_BUILD_EXAMPLES": true,
+                "GLFW_BUILD_TESTS": true
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release-build",
+            "displayName": "Ninja Release Build",
+            "configurePreset": "release",
+            "jobs": 24
+        },
+
+        {
+            "name": "cross-win64-release-build",
+            "displayName": "Cross-compile Win64 Release Build",
+            "configurePreset": "cross-win64-release",
+            "jobs": 24
+        }
+    ]
+}

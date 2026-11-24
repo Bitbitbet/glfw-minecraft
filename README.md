@@ -1,3 +1,7 @@
+> **Fork note:** this is GLFW 3.5.1 with a small set of Minecraft/Wayland
+> patches (IME support, Wayland window management fixes, `wp_pointer_warp_v1`
+> and KDE `xx_fractional_scale_v2`).  See [PATCHES.md](PATCHES.md).
+
 # GLFW
 
 [![Build status](https://github.com/glfw/glfw/actions/workflows/build.yml/badge.svg)](https://github.com/glfw/glfw/actions)

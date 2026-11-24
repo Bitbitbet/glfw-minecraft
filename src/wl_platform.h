@@ -142,6 +142,9 @@ struct wl_output;
 #define xdg_activation_token_v1_interface _glfw_xdg_activation_token_v1_interface
 #define wl_surface_interface _glfw_wl_surface_interface
 #define wp_fractional_scale_v1_interface _glfw_wp_fractional_scale_v1_interface
+#define wp_pointer_warp_v1_interface _glfw_wp_pointer_warp_v1_interface
+#define xx_fractional_scale_v2_interface _glfw_xx_fractional_scale_v2_interface
+#define xx_fractional_scale_manager_v2_interface _glfw_xx_fractional_scale_manager_v2_interface
 
 #define GLFW_WAYLAND_WINDOW_STATE         _GLFWwindowWayland  wl;
 #define GLFW_WAYLAND_LIBRARY_WINDOW_STATE _GLFWlibraryWayland wl;
@@ -377,6 +380,7 @@ typedef struct _GLFWwindowWayland
     GLFWbool                    transparent;
     GLFWbool                    scaleFramebuffer;
     struct wl_surface*          surface;
+    struct wl_callback*         callback;
 
     struct {
         struct wl_event_queue*  queue;
@@ -419,6 +423,7 @@ typedef struct _GLFWwindowWayland
     struct wp_viewport*             scalingViewport;
     uint32_t                        scalingNumerator;
     struct wp_fractional_scale_v1*  fractionalScale;
+    struct xx_fractional_scale_v2*  fractionalScaleV2;
 
     struct zwp_relative_pointer_v1* relativePointer;
     struct zwp_locked_pointer_v1*   lockedPointer;
@@ -435,6 +440,13 @@ typedef struct _GLFWwindowWayland
         uint32_t                    buttonPressSerial;
         const char*                 cursorName;
     } fallback;
+
+    struct zwp_text_input_v1* textInputV1;
+    struct zwp_text_input_v3* textInputV3;
+    struct {
+        char* preeditText;
+        char* commitTextOnReset;
+    } textInputV1Context;
 } _GLFWwindowWayland;
 
 // Wayland-specific global data
@@ -459,6 +471,10 @@ typedef struct _GLFWlibraryWayland
     struct zwp_idle_inhibit_manager_v1*     idleInhibitManager;
     struct xdg_activation_v1*               activationManager;
     struct wp_fractional_scale_manager_v1*  fractionalScaleManager;
+    struct wp_pointer_warp_v1*              pointerWarpV1;
+    struct xx_fractional_scale_manager_v2*  fractionalScaleV2Manager;
+    struct zwp_text_input_manager_v1*       textInputManagerV1;
+    struct zwp_text_input_manager_v3*       textInputManagerV3;
 
     _GLFWofferWayland*          offers;
     unsigned int                offerCount;
@@ -708,6 +724,12 @@ void _glfwDestroyCursorWayland(_GLFWcursor* cursor);
 void _glfwSetCursorWayland(_GLFWwindow* window, _GLFWcursor* cursor);
 void _glfwSetClipboardStringWayland(const char* string);
 const char* _glfwGetClipboardStringWayland(void);
+
+void _glfwUpdatePreeditCursorRectangleWayland(_GLFWwindow* window);
+void _glfwResetPreeditTextWayland(_GLFWwindow* window);
+void _glfwSetTextInputFocusWayland(_GLFWwindow* window, GLFWbool focused);
+void _glfwSetIMEStatusWayland(_GLFWwindow* window, int active);
+int _glfwGetIMEStatusWayland(_GLFWwindow* window);
 
 EGLenum _glfwGetEGLPlatformWayland(EGLint** attribs);
 EGLNativeDisplayType _glfwGetEGLNativeDisplayWayland(void);

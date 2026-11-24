@@ -2,6 +2,9 @@
 build
 build-*
 
+.vscode
+compile_commands.json
+
 # Visual Studio clutter
 _ReSharper*
 *.sdf
