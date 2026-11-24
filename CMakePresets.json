@@ -13,8 +13,8 @@
                 "GLFW_BUILD_WAYLAND": true,
                 "GLFW_BUILD_X11": false,
                 "GLFW_BUILD_DOCS": false,
-                "GLFW_BUILD_EXAMPLES": true,
-                "GLFW_BUILD_TESTS": true
+                "GLFW_BUILD_EXAMPLES": false,
+                "GLFW_BUILD_TESTS": false
             }
         },
         {
@@ -41,14 +41,14 @@
     ],
     "buildPresets": [
         {
-            "name": "release-build",
+            "name": "release",
             "displayName": "Ninja Release Build",
             "configurePreset": "release",
             "jobs": 24
         },
 
         {
-            "name": "cross-win64-release-build",
+            "name": "cross-win64-release",
             "displayName": "Cross-compile Win64 Release Build",
             "configurePreset": "cross-win64-release",
             "jobs": 24

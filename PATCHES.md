@@ -2,7 +2,7 @@
 
 This branch is upstream GLFW **3.5.1** with a small set of patches that make
 Minecraft (LWJGL 3) work well on Wayland, and that remove the fractional-scale
-blur KWin produces at 150%.
+blur KWin produces.
 
 ## Patches
 
@@ -36,8 +36,6 @@ Without the protocol, or before the pointer entered the surface (no valid enter
 serial), it still reports `GLFW_FEATURE_UNAVAILABLE`.
 
 ### 4. `Wayland: support KDE xx_fractional_scale_v2`
-
-This is the interesting one for HiDPI laptops.
 
 At a fractional scale the compositor has to round the logical surface size to
 whole logical pixels. On a 2560x1600 output at 150% a fullscreen window is
@@ -87,31 +85,3 @@ Point LWJGL at the patched library:
 ```
 -Dorg.lwjgl.glfw.libname=/path/to/libglfw.so
 ```
-
-(Replace the path with the absolute path of `build/src/libglfw.so`.)
-
-## KWin setup for the fractional-scale fix
-
-```sh
-mkdir -p ~/.config/plasma-workspace/env
-printf 'export KWIN_WAYLAND_SUPPORT_XX_FRACTIONAL_SCALE_V2=1\n' \
-    > ~/.config/plasma-workspace/env/xx-fractional-scale-v2.sh
-```
-
-Log out and back in, then verify:
-
-```sh
-wayland-info | grep xx_fractional_scale
-./build/.../glfw-v2-check 
-```
-
-## Relation to KernelFreeze/glfw-minecraft
-
-[KernelFreeze/glfw-minecraft](https://github.com/KernelFreeze/glfw-minecraft) is
-an AUR package (`glfw-minecraft-git`) that builds upstream GLFW with a single
-one-line patch from [Admicos/minecraft-wayland](https://github.com/Admicos/minecraft-wayland):
-do not call `_glfwInputError` from `_glfwSetWindowIconWayland`. That patch is
-2023 vintage, targets GLFW 3.4 and only covers the icon call; it has no IME, no
-cursor warp and no fractional-scale handling. Patch 2 here covers the same
-problem (and the window position calls) without the commented-out code, so this
-fork can replace that package.
