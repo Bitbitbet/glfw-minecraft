@@ -60,8 +60,7 @@ Requirements and limitations:
   (Plasma 6.8). Check with `wayland-info | grep xx_fractional_scale`.
 - Only the Wayland backend, only when the window uses server-side decorations
   (the client-side fallback decoration coordinates are not converted).
-- Set `GLFW_WAYLAND_NO_FRACTIONAL_SCALE_V2=1` to opt out per process.
-- `GLFW_WAYLAND_DEBUG_FRACTIONAL_SCALE_V2=1` prints when the path activates.
+- Enabled automatically whenever the compositor advertises the protocol.
 
 ### 5. `build: add development CMake presets`
 
@@ -103,7 +102,7 @@ Log out and back in, then verify:
 
 ```sh
 wayland-info | grep xx_fractional_scale
-./build/.../glfw-v2-check   # with GLFW_WAYLAND_DEBUG_FRACTIONAL_SCALE_V2=1
+./build/.../glfw-v2-check 
 ```
 
 ## Relation to KernelFreeze/glfw-minecraft

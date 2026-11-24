@@ -492,13 +492,6 @@ static double surfaceToLogicalD(_GLFWwindow* window, double value)
     return value * 120.0 / (double) window->wl.scalingNumerator;
 }
 
-static double logicalToSurfaceD(_GLFWwindow* window, double value)
-{
-    if (!window || !window->wl.fractionalScaleV2)
-        return value;
-    return value * (double) window->wl.scalingNumerator / 120.0;
-}
-
 // Makes the surface considered as XRGB instead of ARGB.
 static void setContentAreaOpaque(_GLFWwindow* window)
 {
@@ -816,13 +809,6 @@ static void fractionalScaleV2HandleScaleFactor(void* userData,
                                  window->wl.scalingNumerator / 120.f,
                                  window->wl.scalingNumerator / 120.f);
 
-    if (getenv("GLFW_WAYLAND_DEBUG_FRACTIONAL_SCALE_V2"))
-    {
-        fprintf(stderr, "GLFW: xx_fractional_scale_v2 active, scale %.3f, "
-                        "framebuffer %dx%d\n",
-                window->wl.scalingNumerator / 120.0,
-                window->wl.fbWidth, window->wl.fbHeight);
-    }
 
     if (window->wl.visible)
         _glfwInputWindowDamage(window);
@@ -886,11 +872,6 @@ static void xdgToplevelHandleConfigure(void* userData,
                 break;
         }
     }
-
-    if (getenv("GLFW_WAYLAND_DEBUG_FRACTIONAL_SCALE_V2"))
-        fprintf(stderr, "GLFW: configure %dx%d (v2=%d numerator=%u monitor=%p)\n",
-                width, height, window->wl.fractionalScaleV2 ? 1 : 0,
-                window->wl.scalingNumerator, (void*) window->monitor);
 
     // With xx_fractional_scale_v2 the configure size is expressed in the
     // client's coordinate space, which is pixels; GLFW keeps screen
@@ -1401,8 +1382,7 @@ static GLFWbool createNativeSurface(_GLFWwindow* window,
         // decoration coordinates are not converted here.
         const GLFWbool useFractionalScaleV2 =
             _glfw.wl.fractionalScaleV2Manager &&
-            (!window->decorated || _glfw.wl.decorationManager) &&
-            !getenv("GLFW_WAYLAND_NO_FRACTIONAL_SCALE_V2");
+            (!window->decorated || _glfw.wl.decorationManager);
 
         window->wl.scalingViewport =
             wp_viewporter_get_viewport(_glfw.wl.viewporter, window->wl.surface);
@@ -3654,8 +3634,8 @@ void _glfwSetCursorPosWayland(_GLFWwindow* window, double x, double y)
     wp_pointer_warp_v1_warp_pointer(_glfw.wl.pointerWarpV1,
                                     window->wl.surface,
                                     _glfw.wl.pointer,
-                                    wl_fixed_from_double(logicalToSurfaceD(window, x)),
-                                    wl_fixed_from_double(logicalToSurfaceD(window, y)),
+                                    wl_fixed_from_double(x),
+                                    wl_fixed_from_double(y),
                                     _glfw.wl.pointerEnterSerial);
     wl_display_flush(_glfw.wl.display);
 }
