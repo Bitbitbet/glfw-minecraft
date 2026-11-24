@@ -518,7 +518,19 @@ static void setContentAreaOpaque(_GLFWwindow* window)
 
 static void resizeFramebuffer(_GLFWwindow* window)
 {
-    if (window->wl.fractionalScale || window->wl.fractionalScaleV2)
+    const GLFWbool useConfiguredSize =
+        window->wl.fractionalScaleV2 &&
+        window->wl.configureFbWidth > 0 &&
+        window->wl.configureFbHeight > 0 &&
+        window->wl.width == window->wl.configureLogicalWidth &&
+        window->wl.height == window->wl.configureLogicalHeight;
+
+    if (useConfiguredSize)
+    {
+        window->wl.fbWidth = window->wl.configureFbWidth;
+        window->wl.fbHeight = window->wl.configureFbHeight;
+    }
+    else if (window->wl.fractionalScale || window->wl.fractionalScaleV2)
     {
         // Round halfway away from zero per fractional-scale-v1 protocol spec
         window->wl.fbWidth = (window->wl.width * window->wl.scalingNumerator + 60) / 120;
@@ -882,11 +894,24 @@ static void xdgToplevelHandleConfigure(void* userData,
 
     // With xx_fractional_scale_v2 the configure size is expressed in the
     // client's coordinate space, which is pixels; GLFW keeps screen
-    // coordinates internally.
+    // coordinates internally.  Remember the exact pixel size: rounding the
+    // logical size back up would add a pixel at some scale factors, and that
+    // one pixel shows up as a seam in 1px patterns.
     if (width && height && window->wl.fractionalScaleV2)
     {
+        window->wl.configureFbWidth = width;
+        window->wl.configureFbHeight = height;
+
         width  = surfaceToLogical(window, width);
         height = surfaceToLogical(window, height);
+
+        window->wl.configureLogicalWidth = width;
+        window->wl.configureLogicalHeight = height;
+    }
+    else
+    {
+        window->wl.configureFbWidth = 0;
+        window->wl.configureFbHeight = 0;
     }
 
     if (width && height)

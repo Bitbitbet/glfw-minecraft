@@ -424,6 +424,10 @@ typedef struct _GLFWwindowWayland
     uint32_t                        scalingNumerator;
     struct wp_fractional_scale_v1*  fractionalScale;
     struct xx_fractional_scale_v2*  fractionalScaleV2;
+    int                             configureFbWidth;
+    int                             configureFbHeight;
+    int                             configureLogicalWidth;
+    int                             configureLogicalHeight;
 
     struct zwp_relative_pointer_v1* relativePointer;
     struct zwp_locked_pointer_v1*   lockedPointer;
